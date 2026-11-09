@@ -1,11 +1,12 @@
-from app.database import engine
-from app.models.user import Base
+from sqlalchemy.engine import Engine
 
-def init_db():
-    Base.metadata.create_all(bind=engine)
+from app.database import Base, engine
 
-def drop_db():
-    Base.metadata.drop_all(bind=engine)
+def init_db(database_engine: Engine = engine) -> None:
+    Base.metadata.create_all(bind=database_engine)
+
+def drop_db(database_engine: Engine = engine) -> None:
+    Base.metadata.drop_all(bind=database_engine)
 
 if __name__ == "__main__":
     init_db() # pragma: no cover

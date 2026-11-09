@@ -214,7 +214,22 @@ docker run -it --rm <image-name>
 
 ---
 
-# 📝 7. Submission Instructions
+# 🧪 7. Running Tests
+
+Activate the project virtual environment, then run:
+
+```bash
+python -m pytest
+```
+
+Tests use an isolated in-memory SQLite database by default, so PostgreSQL is not
+required and your development database is left untouched. To use a persistent
+test database, set `TEST_DATABASE_URL` before running pytest. The test fixtures
+drop and recreate tables, so only point this variable at a dedicated test database.
+
+---
+
+# 📝 8. Submission Instructions
 
 After finishing your work:
 

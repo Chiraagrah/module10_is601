@@ -1,8 +1,11 @@
 # tests/conftest.py
 
-import subprocess
-import time
 import logging
+import os
+import socket
+import subprocess
+import sys
+import time
 from typing import Generator, Dict, List
 from contextlib import contextmanager
 
@@ -10,13 +13,12 @@ import pytest
 import requests
 from faker import Faker
 from playwright.sync_api import sync_playwright, Browser, Page
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy.exc import SQLAlchemyError, IntegrityError
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.database import Base, get_engine, get_sessionmaker
 from app.models.user import User
-from app.config import settings
 from app.database_init import init_db, drop_db
 
 # ======================================================================================
@@ -34,10 +36,13 @@ logger = logging.getLogger(__name__)
 fake = Faker()
 Faker.seed(12345)
 
-logger.info(f"Using database URL: {settings.DATABASE_URL}")
-
-# Create an engine and sessionmaker based on DATABASE_URL using factory functions
-test_engine = get_engine(database_url=settings.DATABASE_URL)
+# Use an isolated in-memory database by default; allow an explicit persistent test DB.
+test_database_url = os.getenv("TEST_DATABASE_URL", "sqlite://")
+logger.info(
+    "Using %s for tests.",
+    "TEST_DATABASE_URL" if "TEST_DATABASE_URL" in os.environ else "in-memory SQLite",
+)
+test_engine = get_engine(database_url=test_database_url)
 TestingSessionLocal = get_sessionmaker(engine=test_engine)
 
 # ======================================================================================
@@ -81,17 +86,21 @@ def managed_db_session():
 # ======================================================================================
 # Server Startup / Healthcheck
 # ======================================================================================
-def wait_for_server(url: str, timeout: int = 30) -> bool:
+def wait_for_server(
+    url: str, process: subprocess.Popen, timeout: int = 30
+) -> bool:
     """
     Wait for server to be ready, raising an error if it never becomes available.
     """
     start_time = time.time()
     while (time.time() - start_time) < timeout:
+        if process.poll() is not None:
+            return False
         try:
-            response = requests.get(url)
+            response = requests.get(url, timeout=1)
             if response.status_code == 200:
                 return True
-        except requests.exceptions.ConnectionError:
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
             pass
         time.sleep(1)
     return False
@@ -118,12 +127,8 @@ def setup_test_database(request):
     Base.metadata.drop_all(bind=test_engine)
     logger.info("Dropped all existing tables.")
 
-    # Create all tables
-    Base.metadata.create_all(bind=test_engine)
-    logger.info("Created all tables based on models.")
-
-    # Initialize the database (e.g., run migrations or seed data)
-    init_db()
+    # Create all model tables in the same metadata used for cleanup.
+    init_db(test_engine)
     logger.info("Initialized the test database with initial data.")
 
     yield  # All tests run here
@@ -133,7 +138,7 @@ def setup_test_database(request):
         logger.info("Skipping drop_db due to --preserve-db flag.")
     else:
         logger.info("Cleaning up test database...")
-        drop_db()
+        drop_db(test_engine)
         logger.info("Dropped test database tables.")
 
 @pytest.fixture
@@ -152,6 +157,7 @@ def db_session(request) -> Generator[Session, None, None]:
         if preserve_db:
             logger.info("Skipping table truncation due to --preserve-db flag.")
         else:
+            session.rollback()
             logger.info("Truncating all tables now.")
             for table in reversed(Base.metadata.sorted_tables):
                 logger.info(f"Truncating table: {table}")
@@ -215,33 +221,49 @@ def fastapi_server():
     """
     Start and manage a FastAPI test server, if needed for integration tests.
     """
-    server_url = 'http://127.0.0.1:8000/'
+    with socket.socket() as server_socket:
+        server_socket.bind(("127.0.0.1", 0))
+        port = server_socket.getsockname()[1]
+    server_url = f"http://127.0.0.1:{port}/"
     logger.info("Starting test server...")
+    process = None
 
     try:
         process = subprocess.Popen(
-            ['python', 'main.py'],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
+            [
+                sys.executable,
+                "-m",
+                "uvicorn",
+                "main:app",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(port),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
-        if not wait_for_server(server_url, timeout=30):
+        if not wait_for_server(server_url, process, timeout=30):
             raise ServerStartupError("Failed to start test server")
 
         logger.info("Test server started successfully.")
-        yield  # Run all tests that depend on this fixture
+        yield server_url
 
     except Exception as e:
         logger.error(f"Server error: {str(e)}")
         raise
     finally:
-        logger.info("Terminating test server...")
-        process.terminate()
-        try:
-            process.wait(timeout=5)
-            logger.info("Test server terminated gracefully.")
-        except subprocess.TimeoutExpired:
-            logger.warning("Test server did not terminate in time; killing it.")
-            process.kill()
+        if process is not None:
+            logger.info("Terminating test server...")
+            if process.poll() is None:
+                process.terminate()
+            try:
+                process.wait(timeout=5)
+                logger.info("Test server terminated gracefully.")
+            except subprocess.TimeoutExpired:
+                logger.warning("Test server did not terminate in time; killing it.")
+                process.kill()
+                process.wait()
 
 # ======================================================================================
 # Browser and Page Fixtures (Optional)
