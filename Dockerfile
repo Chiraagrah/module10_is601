@@ -1,4 +1,15 @@
-FROM python:3.10-slim
+FROM python:3.11-slim AS dependencies
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+   PYTHONUNBUFFERED=1
+
+WORKDIR /install
+
+COPY requirements.txt .
+RUN python -m pip install --no-cache-dir --upgrade pip 'setuptools>=78.1.1' wheel && \
+   pip install --no-cache-dir --prefix=/install -r requirements.txt
+
+FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
    PYTHONUNBUFFERED=1
@@ -7,15 +18,12 @@ WORKDIR /app
 
 RUN apt-get update && \
    apt-get upgrade -y && \
-   apt-get install -y --no-install-recommends gcc python3-dev libssl-dev && \
    rm -rf /var/lib/apt/lists/* && \
-   python -m pip install --upgrade pip setuptools>=70.0.0 wheel && \
+   python -m pip install --no-cache-dir --upgrade setuptools wheel && \
    groupadd -r appgroup && \
    useradd -r -g appgroup appuser
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
+COPY --from=dependencies /install/ /usr/local/
 COPY . .
 RUN chown -R appuser:appgroup /app
 
