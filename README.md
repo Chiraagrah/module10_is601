@@ -29,4 +29,4 @@ and recreate tables, so use a dedicated test database.
 
 # Docker Hub
 
-[View the Docker Hub repository for `choreazam/601_module10`](https://hub.docker.com/r/choreazam/601_module10)
+View the Docker Hub repository for [`choreazam/601_module10`](https://hub.docker.com/r/choreazam/601_module10)
